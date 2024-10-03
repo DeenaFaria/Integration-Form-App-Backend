@@ -6,23 +6,41 @@ const { checkAuth } = require('../middleware/auth'); // Only checkAuth middlewar
 // Create a new template (Authenticated users only)
 router.post('/templates', checkAuth, (req, res) => {
   const { title, description, questions, tags } = req.body;
-  const userId = req.user.id; // User's ID from the authenticated session
+  const userId = req.user.id;
 
-  if (!title || !questions) {
+  if (!title || !questions || questions.length === 0) {
     return res.status(400).send('Template title and questions are required');
   }
 
+  // First, insert the template into the templates table
   const query = 'INSERT INTO templates (title, description, user_id, tags) VALUES (?, ?, ?, ?)';
   
-  // Use an arrow function to maintain context
   db.query(query, [title, description, userId, JSON.stringify(tags)], (err, result) => {
     if (err) {
-      console.error(err); // Log the error to the console for debugging
-      return res.status(500).send('Error creating template'); // Ensure `res` is still in context
+      console.error(err);
+      return res.status(500).send('Error creating template');
     }
-    res.send('Template created successfully');
+
+    const templateId = result.insertId;
+
+    // Prepare the SQL for inserting questions
+    const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?'; // Modified to include options
+
+    // Map the questions to the format needed for bulk insert
+    const questionData = questions.map(question => [templateId, question.type, question.value, question.options]); // Included options
+
+    // Insert the questions into the questions table
+    db.query(questionsQuery, [questionData], (err, questionResult) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).send('Error saving questions');
+      }
+
+      res.send('Template and questions created successfully');
+    });
   });
 });
+
 
 
 // Get all templates (Accessible by everyone, authenticated or not)
@@ -37,21 +55,41 @@ router.get('/templates', (req, res) => {
   });
 });
 
-// Get a specific template by ID (Authenticated users only)
-router.get('/templates/:id', checkAuth, (req, res) => {
+// Get a specific template by ID
+// Get a specific template by ID along with its questions
+router.get('/templates/:id', (req, res) => {
   const { id } = req.params;
-  const query = 'SELECT * FROM templates WHERE id = ?';
 
-  db.query(query, [id], (err, results) => {
+  // Query to fetch the template
+  const templateQuery = 'SELECT * FROM templates WHERE id = ?';
+
+  db.query(templateQuery, [id], (err, templateResults) => {
     if (err) {
       return res.status(500).send('Error fetching template');
     }
-    if (results.length === 0) {
+    if (templateResults.length === 0) {
       return res.status(404).send('Template not found');
     }
-    res.json(results[0]); // Return the first (and only) template
+
+    const template = templateResults[0]; // Get the first (and only) template
+
+    // Query to fetch the questions associated with this template
+    const questionsQuery = 'SELECT * FROM questions WHERE template_id = ?';
+    
+    db.query(questionsQuery, [id], (err, questionResults) => {
+      if (err) {
+        return res.status(500).send('Error fetching questions');
+      }
+
+      // Add questions to the template data
+      template.questions = questionResults;
+      
+      // Send back the template with its questions
+      res.json(template);
+    });
   });
 });
+
 
 
 module.exports = router;
