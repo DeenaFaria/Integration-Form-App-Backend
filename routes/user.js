@@ -6,13 +6,13 @@ const { checkAuth } = require('../middleware/auth'); // Only checkAuth middlewar
 // Create a new template (Authenticated users only)
 router.post('/templates', checkAuth, (req, res) => {
   const { title, description, questions, tags } = req.body;
-  const userId = req.user.id;
+  const userId = req.user.id; // Now req.user contains the logged-in user's data, including the id
 
   if (!title || !questions || questions.length === 0) {
     return res.status(400).send('Template title and questions are required');
   }
 
-  // First, insert the template into the templates table
+  // Insert the template into the database, including the user_id
   const query = 'INSERT INTO templates (title, description, user_id, tags) VALUES (?, ?, ?, ?)';
   
   db.query(query, [title, description, userId, JSON.stringify(tags)], (err, result) => {
@@ -23,13 +23,10 @@ router.post('/templates', checkAuth, (req, res) => {
 
     const templateId = result.insertId;
 
-    // Prepare the SQL for inserting questions
-    const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?'; // Modified to include options
+    // Insert questions into the questions table
+    const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
+    const questionData = questions.map(question => [templateId, question.type, question.value, question.options]);
 
-    // Map the questions to the format needed for bulk insert
-    const questionData = questions.map(question => [templateId, question.type, question.value, question.options]); // Included options
-
-    // Insert the questions into the questions table
     db.query(questionsQuery, [questionData], (err, questionResult) => {
       if (err) {
         console.error(err);
@@ -40,6 +37,7 @@ router.post('/templates', checkAuth, (req, res) => {
     });
   });
 });
+
 
 
 
@@ -100,7 +98,7 @@ router.put('/templates/:id',checkAuth, (req, res) => {
   const updateTemplateQuery = `
     UPDATE templates 
     SET title = ?, description = ?, tags = ? 
-    WHERE id = ? AND user_id = ?
+    WHERE id = ? AND user_id=?
   `;
 
   db.query(updateTemplateQuery, [title, description, JSON.stringify(tags), id, req.user.id], (err, result) => {
@@ -139,5 +137,57 @@ router.put('/templates/:id',checkAuth, (req, res) => {
     });
   });
 });
+
+// Route to handle form submission
+// Route to handle form submission
+router.post('/submitForm/:formId', checkAuth, async (req, res) => {
+  const { formId } = req.params;
+  const { responses } = req.body;
+  const userId = req.user.id; // Assuming you have user info in req.user from JWT token
+
+  // Check if responses are provided
+  if (!responses) {
+    return res.status(400).send('Responses are required');
+  }
+
+  try {
+    // Insert the form responses into the database
+    const result = db.query(
+      'INSERT INTO form_responses (user_id, form_id, response_data) VALUES (?, ?, ?)',
+      [userId, formId, JSON.stringify(responses)]
+    );
+
+    // Optionally, check if the insertion was successful
+    if (result.affectedRows === 0) {
+      return res.status(500).send('No response was submitted');
+    }
+
+    res.status(200).json({ message: 'Form submitted successfully!' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error submitting form' });
+  }
+});
+
+
+router.get('/formResponses/:formId', checkAuth, (req, res) => {
+  const { formId } = req.params;
+  const userId = req.user.id;
+
+  db.query(
+    'SELECT * FROM form_responses WHERE form_id = ? AND user_id = ?',
+    [formId, userId],
+    (err, responses) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Error fetching responses' });
+      }
+
+      res.status(200).json(responses); // Send the responses as JSON
+    }
+  );
+});
+
+
 
 module.exports = router;
