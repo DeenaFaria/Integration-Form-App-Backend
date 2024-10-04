@@ -90,6 +90,54 @@ router.get('/templates/:id', (req, res) => {
   });
 });
 
+// Routes
+router.put('/templates/:id',checkAuth, (req, res) => {
+  const { id } = req.params;
+  console.log(`Updating template with ID: ${id}`);
+  const { title, description, questions, tags } = req.body;
 
+  // First, update the template details (title, description, tags) in the templates table
+  const updateTemplateQuery = `
+    UPDATE templates 
+    SET title = ?, description = ?, tags = ? 
+    WHERE id = ? AND user_id = ?
+  `;
+
+  db.query(updateTemplateQuery, [title, description, JSON.stringify(tags), id, req.user.id], (err, result) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Error updating template details' });
+    }
+
+    // Check if the template exists and belongs to the user
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Template not found or you do not have permission to update it' });
+    }
+
+    // Now update the questions associated with the template
+    // First, delete the existing questions to replace them with the updated ones
+    const deleteQuestionsQuery = 'DELETE FROM questions WHERE template_id = ?';
+
+    db.query(deleteQuestionsQuery, [id], (err) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Error removing old questions' });
+      }
+
+      // Insert the updated questions
+      const insertQuestionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
+      const questionData = questions.map(question => [id, question.type, question.value, JSON.stringify(question.options)]);
+
+      db.query(insertQuestionsQuery, [questionData], (err) => {
+        if (err) {
+          console.error(err);
+          return res.status(500).json({ error: 'Error saving updated questions' });
+        }
+
+        res.json({ message: 'Template and questions updated successfully' });
+      });
+    });
+  });
+});
 
 module.exports = router;
