@@ -174,16 +174,40 @@ router.get('/formResponses/:formId', checkAuth, (req, res) => {
   const { formId } = req.params;
   const userId = req.user.id;
 
+  // First, check if the current user is the creator of the form
   db.query(
-    'SELECT * FROM form_responses WHERE form_id = ? AND user_id = ?',
-    [formId, userId],
-    (err, responses) => {
+    'SELECT user_id FROM templates WHERE id = ?',
+    [formId],
+    (err, results) => {
       if (err) {
         console.error(err);
-        return res.status(500).json({ message: 'Error fetching responses' });
+        return res.status(500).json({ message: 'Error checking form creator' });
       }
 
-      res.status(200).json(responses); // Send the responses as JSON
+      if (results.length === 0) {
+        return res.status(404).json({ message: 'Form not found' });
+      }
+
+      const formCreatorId = results[0].user_id;
+
+      // If the user is not the creator, deny access
+      if (formCreatorId !== userId) {
+        return res.status(403).json({ message: 'You do not have permission to view these responses' });
+      }
+
+      // If the user is the creator, fetch the form responses
+      db.query(
+        'SELECT * FROM form_responses WHERE form_id = ?',
+        [formId],
+        (err, responses) => {
+          if (err) {
+            console.error(err);
+            return res.status(500).json({ message: 'Error fetching responses' });
+          }
+
+          res.status(200).json(responses); // Send the responses as JSON
+        }
+      );
     }
   );
 });
