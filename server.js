@@ -42,7 +42,7 @@ const authenticateJWT = (req, res, next) => {
 
 // Middleware to check if the user is an admin
 const isAdmin = (req, res, next) => {
-  if (req.user && req.user.is_admin) { // Assuming user info is in req.user after login
+  if (req.user && req.user.isAdmin) { // Assuming user info is in req.user after login
     next(); // Proceed if admin
   } else {
     res.status(403).send('Access denied'); // Forbidden if not admin

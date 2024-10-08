@@ -65,13 +65,16 @@ router.post('/login', async (req, res) => {
         return res.status(400).json({ message: 'Invalid credentials' });
       }
 
+
+      // Ensure isAdmin exists in the user data
+      console.log("User data:", user); // Debugging: log user data
+
       // Create JWT token
-            // Generate a JWT containing the user's ID and other necessary info
-            const payload = {
-              id: user.id,         // Include the user's ID
-              email: user.email,
-              isAdmin: user.isAdmin // Add any other relevant fields (optional)
-            };
+      const payload = {
+        id: user.id,
+        email: user.email,
+        isAdmin: user.is_admin // Ensure this exists in your database
+      };
       const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
 
       return res.json({ token });
