@@ -1,39 +1,65 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const cloudinary = require('../config/cloud');
 const { checkAuth } = require('../middleware/auth'); // Only checkAuth middleware is needed
+const multer = require('multer');
+
+
+// Multer configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/'); // Local directory to store uploaded files temporarily
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname); // Naming files uniquely
+  },
+});
+
+const upload = multer({ storage });
 
 // Create a new template (Authenticated users only)
-router.post('/templates', checkAuth, (req, res) => {
+// Create a new template route
+router.post('/templates', checkAuth, upload.single('image'), async (req, res) => {
   const { title, description, questions, tags } = req.body;
-  const userId = req.user.id; // Now req.user contains the logged-in user's data, including the id
+  const userId = req.user.id;
+  const imageFile = req.file;
 
-  if (!title || !questions || questions.length === 0) {
-    return res.status(400).send('Template title and questions are required');
+  console.log('Image File:', req.file);
+
+
+  let imageUrl = null;
+
+  // If an image is uploaded, handle Cloudinary upload
+  if (imageFile) {
+    try {
+      const result = await cloudinary.uploader.upload(imageFile.path);
+      imageUrl = result.secure_url;
+    } catch (err) {
+      console.error('Cloudinary upload error:', err);
+      return res.status(500).json({ message: 'Error uploading image' });
+    }
   }
 
-  // Insert the template into the database, including the user_id
-  const query = 'INSERT INTO templates (title, description, user_id, tags) VALUES (?, ?, ?, ?)';
-  
-  db.query(query, [title, description, userId, JSON.stringify(tags)], (err, result) => {
+  // Save template data to database
+  const query = 'INSERT INTO templates (title, description, user_id, tags, image_url) VALUES (?, ?, ?, ?, ?)';
+  db.query(query, [title, description, userId, JSON.stringify(tags), imageUrl], (err, result) => {
     if (err) {
       console.error(err);
-      return res.status(500).send('Error creating template');
+      return res.status(500).json({ message: 'Error creating template' });
     }
 
     const templateId = result.insertId;
-
-    // Insert questions into the questions table
     const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
-    const questionData = questions.map(question => [templateId, question.type, question.value, question.options]);
+    const questionData = questions.map(q => [templateId, q.type, q.value, JSON.stringify(q.options)]);
 
-    db.query(questionsQuery, [questionData], (err, questionResult) => {
+    db.query(questionsQuery, [questionData], (err) => {
       if (err) {
         console.error(err);
-        return res.status(500).send('Error saving questions');
+        return res.status(500).json({ message: 'Error saving questions' });
       }
 
-      res.send('Template and questions created successfully');
+      res.json({ message: 'Template and questions created successfully' });
     });
   });
 });
@@ -89,33 +115,47 @@ router.get('/templates/:id', (req, res) => {
 });
 
 // Routes
-router.put('/templates/:id',checkAuth, (req, res) => {
+// Update an existing template
+router.put('/templates/:id', checkAuth,upload.single('image'), async (req, res) => {
   const { id } = req.params;
-  console.log(`Updating template with ID: ${id}`);
   const { title, description, questions, tags } = req.body;
+  const imageFile = req.file; // Again assuming multer or similar middleware is used
+  console.log('Received request to update template:', { id, title, description, questions, tags });
+  console.log('Image file:', imageFile); // Log the image file details
 
-  // First, update the template details (title, description, tags) in the templates table
+  let imageUrl = null;
+
+  // If a new image was uploaded, upload to Cloudinary
+  if (imageFile) {
+    try {
+      const result = await cloudinary.uploader.upload(imageFile.path);
+      imageUrl = result.secure_url; // Get the uploaded image URL
+    } catch (err) {
+      console.error('Error uploading image to Cloudinary:', err);
+      return res.status(500).send('Error uploading image');
+    }
+  }
+
+  // First, update the template details (title, description, tags, and possibly image URL)
   const updateTemplateQuery = `
     UPDATE templates 
-    SET title = ?, description = ?, tags = ? 
-    WHERE id = ? AND user_id=?
+    SET title = ?, description = ?, tags = ?, image_url = IFNULL(?, image_url) 
+    WHERE id = ? AND user_id = ?
   `;
 
-  db.query(updateTemplateQuery, [title, description, JSON.stringify(tags), id, req.user.id], (err, result) => {
+  db.query(updateTemplateQuery, [title, description, tags, imageUrl, id, req.user.id], (err, result) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ error: 'Error updating template details' });
     }
 
-    // Check if the template exists and belongs to the user
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Template not found or you do not have permission to update it' });
     }
 
-    // Now update the questions associated with the template
-    // First, delete the existing questions to replace them with the updated ones
+    // Now update the questions
     const deleteQuestionsQuery = 'DELETE FROM questions WHERE template_id = ?';
-
+    
     db.query(deleteQuestionsQuery, [id], (err) => {
       if (err) {
         console.error(err);
@@ -138,7 +178,7 @@ router.put('/templates/:id',checkAuth, (req, res) => {
   });
 });
 
-// Route to handle form submission
+
 // Route to handle form submission
 router.post('/submitForm/:formId', checkAuth, async (req, res) => {
   const { formId } = req.params;
@@ -212,6 +252,182 @@ router.get('/formResponses/:formId', checkAuth, (req, res) => {
   );
 });
 
+router.post('/templates/:id/comments', checkAuth, (req, res) => {
+  const { text } = req.body;
+  const userId = req.user.id; // User ID from middleware
+  const templateId = req.params.id;
+
+  // Validate the input
+  if (!text) {
+    return res.status(400).json({ message: 'Comment text is required.' });
+  }
+
+  db.query(
+    'INSERT INTO comments (template_id, user_id, content) VALUES (?, ?, ?)',
+    [templateId, userId, text], // Correct use of 'text'
+    (error, results) => {
+      if (error) {
+        console.error(error); // Log the error
+        return res.status(500).send('Server error');
+      }
+      res.status(201).json({ id: results.insertId, userId, text, createdAt: new Date() });
+    }
+  );
+});
+
+
+
+// POST /templates/:id/like
+router.post('/templates/:id/like', checkAuth, (req, res) => {
+  const templateId = req.params.id;
+  const userId = req.user.id;
+
+  // Check if the user has already liked the template
+  db.query('SELECT * FROM likes WHERE user_id = ? AND template_id = ?', [userId, templateId], (error, likeResults) => {
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Server error' });
+    }
+
+    if (likeResults.length > 0) {
+      return res.status(400).json({ message: 'You have already liked this template' });
+    }
+
+    // Insert the like into the likes table
+    db.query('INSERT INTO likes (user_id, template_id) VALUES (?, ?)', [userId, templateId], (error) => {
+      if (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Server error' });
+      }
+
+      // Increment the likes count for the template and return the updated count
+      db.query('UPDATE templates SET likes_count = likes_count + 1 WHERE id = ?', [templateId], (error) => {
+        if (error) {
+          console.error(error);
+          return res.status(500).json({ message: 'Server error' });
+        }
+
+        // Query the updated likes_count and send it in the response
+        db.query('SELECT likes_count FROM templates WHERE id = ?', [templateId], (error, result) => {
+          if (error) {
+            console.error(error);
+            return res.status(500).json({ message: 'Server error' });
+          }
+          console.log('Likes count being returned:', result[0].likes_count); 
+          return res.status(200).json({ likes_count: result[0].likes_count });
+        });
+      });
+    });
+  });
+});
+
+
+
+// DELETE /templates/:id/unlike
+router.delete('/templates/:id/unlike', checkAuth, (req, res) => {
+  const templateId = req.params.id;
+  const userId = req.user.id;
+
+  // Check if the user has liked the template
+  db.query('SELECT * FROM likes WHERE user_id = ? AND template_id = ?', [userId, templateId], (error, likeResults) => {
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Server error' });
+    }
+
+    if (likeResults.length === 0) {
+      return res.status(400).json({ message: 'You have not liked this template' });
+    }
+
+    // Delete the like and decrement the likes count
+    db.query('DELETE FROM likes WHERE user_id = ? AND template_id = ?', [userId, templateId], (error) => {
+      if (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Server error' });
+      }
+
+      // Decrement the likes count for the template and return the updated count
+      db.query('UPDATE templates SET likes_count = likes_count - 1 WHERE id = ?', [templateId], (error) => {
+        if (error) {
+          console.error(error);
+          return res.status(500).json({ message: 'Server error' });
+        }
+
+        // Query the updated likes_count and send it in the response
+        db.query('SELECT likes_count FROM templates WHERE id = ?', [templateId], (error, result) => {
+          if (error) {
+            console.error(error);
+            return res.status(500).json({ message: 'Server error' });
+          }
+
+          return res.status(200).json({ likes_count: result[0].likes_count });
+        });
+      });
+    });
+  });
+});
+
+// Add a comment to a template
+router.post('/templates/:id/comments', checkAuth, (req, res) => {
+  const templateId = req.params.id;
+  const { content } = req.body; // Use 'content' based on your table structure
+
+  // Prepare the comment data
+  const comment = {
+    content: content,
+    user_id: req.user.id, // Assuming you're using user ID from the authenticated user
+    template_id: templateId,
+  };
+
+  // Insert the comment into the database
+  const query = 'INSERT INTO comments (template_id, user_id, content) VALUES (?, ?, ?)';
+
+  db.query(query, [templateId, req.user.id, content], (err, result) => {
+    if (err) {
+      return res.status(400).json({ message: 'Error adding comment', error: err });
+    }
+
+    // Optionally, update the template's comment count if needed
+    const updateQuery = 'UPDATE templates SET comment_count = comment_count + 1 WHERE id = ?';
+
+    db.query(updateQuery, [templateId], (updateErr) => {
+      if (updateErr) {
+        return res.status(400).json({ message: 'Error updating template', error: updateErr });
+      }
+
+      // Send back the inserted comment (optionally include the created_at timestamp)
+      res.status(201).json({
+        comment: {
+          ...comment,
+          id: result.insertId, // Get the auto-generated ID
+          created_at: new Date().toISOString(), // You can also get this from the DB if desired
+        },
+      });
+    });
+  });
+});
+
+// Get Comments for Template
+// GET /templates/:id/comments
+router.get('/templates/:id/comments', (req, res) => {
+  const templateId = req.params.id;
+
+  const query = `
+    SELECT comments.id, comments.template_id, comments.user_id, comments.content, comments.created_at, users.username
+    FROM comments
+    JOIN users ON comments.user_id = users.id
+    WHERE comments.template_id = ?;
+  `;
+
+  db.query(query, [templateId], (error, results) => {
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Server error' });
+    }
+
+    return res.status(200).json(results);
+  });
+});
 
 
 module.exports = router;

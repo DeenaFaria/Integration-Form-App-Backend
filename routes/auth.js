@@ -73,7 +73,8 @@ router.post('/login', async (req, res) => {
       const payload = {
         id: user.id,
         email: user.email,
-        isAdmin: user.is_admin // Ensure this exists in your database
+        isAdmin: user.is_admin, // Ensure this exists in your database
+        username: user.username 
       };
       const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
 

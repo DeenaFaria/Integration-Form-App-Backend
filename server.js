@@ -12,7 +12,11 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));  // Set the JSON body size limit
+app.use(express.urlencoded({ limit: '10mb', extended: true }));  // Set the URL-encoded body size limit
+
+// Middleware
+//app.use(express.json());
 app.use(cors({
   origin: 'http://localhost:3000', // Replace with your frontend's URL
   credentials: true // Allow credentials (such as cookies and tokens)
