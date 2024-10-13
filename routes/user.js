@@ -18,6 +18,18 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+// Fetch all users
+router.get('/users', checkAuth, (req, res) => {
+  const query = 'SELECT id, username, email FROM users'; // Adjust columns as necessary
+
+  db.query(query, (err, results) => {
+    if (err) {
+      return res.status(500).send('Error fetching users');
+    }
+    res.json(results);
+  });
+});
+
 // Create a new template (Authenticated users only)
 // Create a new template route
 router.post('/templates', checkAuth, upload.single('image'), async (req, res) => {
@@ -427,6 +439,178 @@ router.get('/templates/:id/comments', (req, res) => {
 
     return res.status(200).json(results);
   });
+});
+
+// GET /search?query=your_search_term
+router.get('/search', (req, res) => {
+  const searchTerm = req.query.query;
+
+  const sqlQuery = `
+    SELECT DISTINCT t.id, t.title, t.description
+    FROM templates t
+    LEFT JOIN questions q ON t.id = q.template_id
+    LEFT JOIN comments c ON t.id = c.template_id
+    WHERE 
+      MATCH(t.title, t.description) AGAINST (? IN BOOLEAN MODE)
+      OR MATCH(q.value) AGAINST (? IN BOOLEAN MODE)
+      OR MATCH(c.content) AGAINST (? IN BOOLEAN MODE);
+  `;
+
+  db.query(sqlQuery, [searchTerm, searchTerm, searchTerm], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ message: 'Server error' });
+    }
+    res.status(200).json({ templates: results });
+  });
+});
+
+router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
+  const templateId = req.params.id;
+
+  // Step 1: Retrieve raw data
+  const sqlQuery = `
+    SELECT
+      q.value AS question_text,
+      q.type AS question_type,
+      r.response_data,
+      q.id
+    FROM questions q
+    LEFT JOIN form_responses r ON q.template_id = r.form_id
+    WHERE q.template_id = ?;
+  `;
+
+  db.query(sqlQuery, [templateId], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ message: 'Server error' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'No data found for this template.' });
+    }
+
+    console.log('Raw results from DB:', results);  // Debugging log
+
+    // Step 2: Process the data
+    const processedResults = results.reduce((acc, row) => {
+      const { question_text, question_type, response_data } = row;
+
+      console.log('Current row:', row);  // Debugging log
+      console.log('response_data:', response_data);  // Debugging log
+
+      let responseValue = {};
+      if (response_data) {
+        // Check if response_data is already an object
+        if (typeof response_data === 'object') {
+          responseValue = response_data;  // Use it directly
+        } else if (typeof response_data === 'string') {
+          try {
+            responseValue = JSON.parse(response_data);  // Parse if it's a string
+          } catch (error) {
+            console.error('Error parsing response_data:', response_data);
+            return acc;  // Skip this entry if parsing fails
+          }
+        }
+      }
+
+      const responseKey = Object.keys(responseValue)[0];
+      const responseEntry = responseValue[responseKey];
+
+      // Check if the question is numeric
+      if (question_type === 'numeric') {
+        const numericValue = parseFloat(responseEntry);
+        if (!isNaN(numericValue)) {
+          if (!acc[question_text]) {
+            acc[question_text] = { numericValues: [], stringValues: [] };
+          }
+          acc[question_text].numericValues.push(numericValue);
+        }
+      }
+
+      // Check if the question is a string
+      if (question_type === 'string') {
+        if (responseEntry) {
+          if (!acc[question_text]) {
+            acc[question_text] = { numericValues: [], stringValues: [] };
+          }
+          acc[question_text].stringValues.push(responseEntry);
+        }
+      }
+
+      // Add case for radio questions
+      if (question_type === 'radio') {
+        if (responseEntry) {
+          if (!acc[question_text]) {
+            acc[question_text] = { numericValues: [], stringValues: [] };
+          }
+          acc[question_text].stringValues.push(responseEntry);  // Store the selected option
+        }
+      }
+
+      return acc;
+    }, {});
+
+    // Step 3: Calculate averages and most common string values
+    const finalResults = Object.entries(processedResults).map(([question, data]) => {
+      const avgNumericValue =
+        data.numericValues.length > 0
+          ? (data.numericValues.reduce((sum, value) => sum + value, 0) / data.numericValues.length)
+          : 'N/A';
+
+      const mostCommonStringValue =
+        data.stringValues.length > 0
+          ? Object.entries(data.stringValues.reduce((countMap, value) => {
+              countMap[value] = (countMap[value] || 0) + 1;
+              return countMap;
+            }, {}))
+            .sort((a, b) => b[1] - a[1])[0][0]
+          : 'N/A';
+
+      return {
+        question_text: question,
+        avg_numeric_value: avgNumericValue,
+        most_common_string_value: mostCommonStringValue,
+      };
+    });
+
+    console.log('Processed results:', finalResults); // Log the final processed results
+
+    return res.status(200).json(finalResults);
+  });
+});
+
+// Get access settings for a specific template
+router.get('/access-settings/:templateId', (req, res) => {
+  const templateId = req.params.templateId;
+  
+  // Use a callback function for the query
+  db.query('SELECT user_id, can_access FROM access_settings WHERE template_id = ?', [templateId], (error, settings) => {
+    if (error) {
+      console.error('Error fetching access settings:', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json(settings);
+  });
+});
+
+
+// Update access settings
+router.post('/access-settings', (req, res) => {
+  const { templateId, userId, canAccess } = req.body;
+
+  // Use a callback function for the query
+  db.query(
+    'INSERT INTO access_settings (template_id, user_id, can_access) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE can_access = ?',
+    [templateId, userId, canAccess, canAccess],
+    (error) => {
+      if (error) {
+        console.error('Error updating access settings:', error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.sendStatus(200);
+    }
+  );
 });
 
 
