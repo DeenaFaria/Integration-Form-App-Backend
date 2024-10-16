@@ -51,40 +51,49 @@ router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    // Check if user exists
-    db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
-      if (results.length === 0) {
-        return res.status(400).json({ message: 'Invalid credentials' });
-      }
+      // Check if user exists
+      db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
+          if (err) {
+              return res.status(500).json({ message: 'Database error', error: err });
+          }
 
-      const user = results[0];
+          if (results.length === 0) {
+              return res.status(400).json({ message: 'Invalid email or password' });
+          }
 
-      // Compare password
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(400).json({ message: 'Invalid credentials' });
-      }
+          const user = results[0];
 
+          // Check if the user is blocked
+          if (user.is_blocked) {
+              return res.status(403).json({ message: 'Your account has been blocked. Please contact support.' });
+          }
 
-      // Ensure isAdmin exists in the user data
-      console.log("User data:", user); // Debugging: log user data
+          // Compare password
+          const isMatch = await bcrypt.compare(password, user.password);
+          if (!isMatch) {
+              return res.status(400).json({ message: 'Invalid email or password' });
+          }
 
-      // Create JWT token
-      const payload = {
-        id: user.id,
-        email: user.email,
-        isAdmin: user.is_admin, // Ensure this exists in your database
-        username: user.username 
-      };
-      const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+          // Ensure isAdmin exists in the user data
+          console.log("User data:", user); // Debugging: log user data
 
-      return res.json({ token });
-    });
+          // Create JWT token
+          const payload = {
+              id: user.id,
+              email: user.email,
+              isAdmin: user.is_admin, // Ensure this exists in your database
+              username: user.username 
+          };
+          const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+          return res.json({ token });
+      });
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+      console.error(err.message);
+      res.status(500).send('Server Error');
   }
 });
+
 
 
 

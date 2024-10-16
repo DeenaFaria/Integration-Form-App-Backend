@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const cloudinary = require('../config/cloud');
-const { checkAuth } = require('../middleware/auth'); // Only checkAuth middleware is needed
+const { checkAuth, checkAccess, optionalAuth } = require('../middleware/auth'); // Only checkAuth middleware is needed
 const multer = require('multer');
 
 
@@ -33,12 +33,11 @@ router.get('/users', checkAuth, (req, res) => {
 // Create a new template (Authenticated users only)
 // Create a new template route
 router.post('/templates', checkAuth, upload.single('image'), async (req, res) => {
-  const { title, description, questions, tags } = req.body;
+  const { title, description, questions, tags, topic } = req.body;  // Added topic
   const userId = req.user.id;
   const imageFile = req.file;
 
   console.log('Image File:', req.file);
-
 
   let imageUrl = null;
 
@@ -53,15 +52,20 @@ router.post('/templates', checkAuth, upload.single('image'), async (req, res) =>
     }
   }
 
-  // Save template data to database
-  const query = 'INSERT INTO templates (title, description, user_id, tags, image_url) VALUES (?, ?, ?, ?, ?)';
-  db.query(query, [title, description, userId, JSON.stringify(tags), imageUrl], (err, result) => {
+  // Save template data to the database with topic included
+  const query = `
+    INSERT INTO templates (title, description, user_id, tags, image_url, topic) 
+    VALUES (?, ?, ?, ?, ?, ?)
+  `;
+  db.query(query, [title, description, userId, JSON.stringify(tags), imageUrl, topic], (err, result) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ message: 'Error creating template' });
     }
 
     const templateId = result.insertId;
+
+    // Insert questions into the questions table
     const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
     const questionData = questions.map(q => [templateId, q.type, q.value, JSON.stringify(q.options)]);
 
@@ -79,17 +83,75 @@ router.post('/templates', checkAuth, upload.single('image'), async (req, res) =>
 
 
 
-// Get all templates (Accessible by everyone, authenticated or not)
-router.get('/templates', (req, res) => {
-  const query = 'SELECT * FROM templates';
 
-  db.query(query, (err, results) => {
+router.get('/templates', (req, res) => {
+  const userId = req.user ? req.user.id : null; // Get user ID from auth middleware if available
+
+  // Fetch all templates
+  const query = 'SELECT * FROM templates';
+  db.query(query, (err, templates) => {
     if (err) {
       return res.status(500).send('Error fetching templates');
     }
-    res.json(results);
+
+    // Initialize an array to hold templates with access information
+    const templatesWithAccess = [];
+
+    // Process each template to check access settings
+    let templatesProcessed = 0;
+
+    templates.forEach(template => {
+      const templateId = template.id;
+
+      // Fetch access settings for the current template
+      const accessQuery = `
+        SELECT user_id, can_access FROM access_settings 
+        WHERE template_id = ?`;
+        
+      db.query(accessQuery, [templateId], (err, accessResults) => {
+        if (err) {
+          return res.status(500).send('Error checking access');
+        }
+
+        // Case 1: No access settings exist for this template
+        if (accessResults.length === 0) {
+          // Allow access by default if no settings exist
+          template.canAccess = true;
+        } else {
+          // Case 2: Access settings exist, check if the user has access
+          const userAccess = accessResults.find(result => result.user_id === userId && result.can_access);
+
+          if (userAccess) {
+            // User is allowed access
+            template.canAccess = true;
+          } else {
+            // User is denied access
+            template.canAccess = false;
+          }
+        }
+
+        // Add the modified template to the array
+        templatesWithAccess.push(template);
+
+        // Track the number of processed templates
+        templatesProcessed++;
+
+        // If all templates have been processed, send the response
+        if (templatesProcessed === templates.length) {
+          res.json(templatesWithAccess);
+        }
+      });
+    });
+
+    // Handle the case where no templates are found
+    if (templates.length === 0) {
+      res.json(templatesWithAccess); // This will be an empty array
+    }
   });
 });
+
+
+
 
 // Get a specific template by ID
 // Get a specific template by ID along with its questions
@@ -107,7 +169,7 @@ router.get('/templates/:id', (req, res) => {
       return res.status(404).send('Template not found');
     }
 
-    const template = templateResults[0]; // Get the first (and only) template
+    const template = templateResults[0];
 
     // Query to fetch the questions associated with this template
     const questionsQuery = 'SELECT * FROM questions WHERE template_id = ?';
@@ -117,7 +179,6 @@ router.get('/templates/:id', (req, res) => {
         return res.status(500).send('Error fetching questions');
       }
 
-      // Add questions to the template data
       template.questions = questionResults;
       
       // Send back the template with its questions
@@ -126,13 +187,15 @@ router.get('/templates/:id', (req, res) => {
   });
 });
 
+
 // Routes
 // Update an existing template
-router.put('/templates/:id', checkAuth,upload.single('image'), async (req, res) => {
+router.put('/templates/:id', checkAuth, checkAccess, upload.single('image'), async (req, res) => {
   const { id } = req.params;
-  const { title, description, questions, tags } = req.body;
-  const imageFile = req.file; // Again assuming multer or similar middleware is used
-  console.log('Received request to update template:', { id, title, description, questions, tags });
+  const { title, description, questions, tags, topic } = req.body;  // Added topic
+  const imageFile = req.file;
+
+  console.log('Received request to update template:', { id, title, description, questions, tags, topic });
   console.log('Image file:', imageFile); // Log the image file details
 
   let imageUrl = null;
@@ -148,14 +211,14 @@ router.put('/templates/:id', checkAuth,upload.single('image'), async (req, res) 
     }
   }
 
-  // First, update the template details (title, description, tags, and possibly image URL)
+  // Update the template details including topic, title, description, tags, and possibly image URL
   const updateTemplateQuery = `
     UPDATE templates 
-    SET title = ?, description = ?, tags = ?, image_url = IFNULL(?, image_url) 
-    WHERE id = ? AND user_id = ?
+    SET title = ?, description = ?, tags = ?, topic = ?, image_url = IFNULL(?, image_url) 
+    WHERE id = ? ${req.user.isAdmin ? '' : 'AND user_id = ?'}
   `;
 
-  db.query(updateTemplateQuery, [title, description, tags, imageUrl, id, req.user.id], (err, result) => {
+  db.query(updateTemplateQuery, [title, description, tags, topic, imageUrl, id, req.user.id], (err, result) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ error: 'Error updating template details' });
@@ -189,6 +252,7 @@ router.put('/templates/:id', checkAuth,upload.single('image'), async (req, res) 
     });
   });
 });
+
 
 
 // Route to handle form submission
@@ -492,32 +556,54 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
 
     console.log('Raw results from DB:', results);  // Debugging log
 
-    // Step 2: Process the data
-    const processedResults = results.reduce((acc, row) => {
-      const { question_text, question_type, response_data } = row;
+   // Step 2: Process the data
+const processedResults = results.reduce((acc, row) => {
+  const { question_text, question_type, response_data } = row;
 
-      console.log('Current row:', row);  // Debugging log
-      console.log('response_data:', response_data);  // Debugging log
+  console.log('Current row:', row);  // Debugging log
+  console.log('response_data:', response_data);  // Debugging log
 
-      let responseValue = {};
-      if (response_data) {
-        // Check if response_data is already an object
-        if (typeof response_data === 'object') {
-          responseValue = response_data;  // Use it directly
-        } else if (typeof response_data === 'string') {
-          try {
-            responseValue = JSON.parse(response_data);  // Parse if it's a string
-          } catch (error) {
-            console.error('Error parsing response_data:', response_data);
-            return acc;  // Skip this entry if parsing fails
+  let responseValue = {};
+  if (response_data) {
+    // Check if response_data is already an object
+    if (typeof response_data === 'object') {
+      responseValue = response_data;  // Use it directly
+    } else if (typeof response_data === 'string') {
+      try {
+        responseValue = JSON.parse(response_data);  // Parse if it's a string
+      } catch (error) {
+        console.error('Error parsing response_data:', response_data);
+        return acc;  // Skip this entry if parsing fails
+      }
+    }
+  }
+
+  // Check if there are any entries in responseValue to process
+  if (Object.keys(responseValue).length === 0) {
+    return acc;  // Skip if there's no response data
+  }
+
+  // Now we need to process each entry in responseValue
+  Object.entries(responseValue).forEach(([responseKey, responseEntry]) => {
+    // Only process if the responseKey matches a known question ID
+    if (responseKey) {
+      // Check if the question is a string or radio option
+      if (question_type === 'string' || question_type === 'radio') {
+        if (responseEntry) {
+          if (!acc[question_text]) {
+            acc[question_text] = { numericValues: [], stringValues: [] };
           }
+          acc[question_text].stringValues.push(responseEntry);  // Store the selected option
+        }
+
+        // Additionally, check if the responseEntry is a numeric value
+        const numericValue = parseFloat(responseEntry);
+        if (!isNaN(numericValue)) {
+          acc[question_text].numericValues.push(numericValue); // Aggregate numeric values
         }
       }
 
-      const responseKey = Object.keys(responseValue)[0];
-      const responseEntry = responseValue[responseKey];
-
-      // Check if the question is numeric
+      // Check if the question is numeric explicitly (in case there are numeric questions as well)
       if (question_type === 'numeric') {
         const numericValue = parseFloat(responseEntry);
         if (!isNaN(numericValue)) {
@@ -527,52 +613,44 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
           acc[question_text].numericValues.push(numericValue);
         }
       }
+    }
+  });
 
-      // Check if the question is a string
-      if (question_type === 'string') {
-        if (responseEntry) {
-          if (!acc[question_text]) {
-            acc[question_text] = { numericValues: [], stringValues: [] };
-          }
-          acc[question_text].stringValues.push(responseEntry);
-        }
-      }
+  return acc;
+}, {});
 
-      // Add case for radio questions
-      if (question_type === 'radio') {
-        if (responseEntry) {
-          if (!acc[question_text]) {
-            acc[question_text] = { numericValues: [], stringValues: [] };
-          }
-          acc[question_text].stringValues.push(responseEntry);  // Store the selected option
-        }
-      }
 
-      return acc;
+   // Step 3: Calculate averages and most common string values
+const finalResults = Object.entries(processedResults).map(([question, data]) => {
+  let avgNumericValue;
+  let mostCommonStringValue;
+
+  // Handle numeric values
+  if (data.numericValues.length > 0) {
+    avgNumericValue = (data.numericValues.reduce((sum, value) => sum + value, 0) / data.numericValues.length);
+  } else {
+    avgNumericValue = 'N/A'; // If no numeric values, set to N/A
+  }
+
+  // Handle string values
+  if (data.stringValues.length > 0) {
+    const countMap = data.stringValues.reduce((countMap, value) => {
+      countMap[value] = (countMap[value] || 0) + 1;
+      return countMap;
     }, {});
+    
+    mostCommonStringValue = Object.entries(countMap)
+      .sort((a, b) => b[1] - a[1])[0][0];
+  } else {
+    mostCommonStringValue = 'N/A'; // If no string values, set to N/A
+  }
 
-    // Step 3: Calculate averages and most common string values
-    const finalResults = Object.entries(processedResults).map(([question, data]) => {
-      const avgNumericValue =
-        data.numericValues.length > 0
-          ? (data.numericValues.reduce((sum, value) => sum + value, 0) / data.numericValues.length)
-          : 'N/A';
-
-      const mostCommonStringValue =
-        data.stringValues.length > 0
-          ? Object.entries(data.stringValues.reduce((countMap, value) => {
-              countMap[value] = (countMap[value] || 0) + 1;
-              return countMap;
-            }, {}))
-            .sort((a, b) => b[1] - a[1])[0][0]
-          : 'N/A';
-
-      return {
-        question_text: question,
-        avg_numeric_value: avgNumericValue,
-        most_common_string_value: mostCommonStringValue,
-      };
-    });
+  return {
+    question_text: question,
+    avg_numeric_value: avgNumericValue,
+    most_common_string_value: mostCommonStringValue,
+  };
+});
 
     console.log('Processed results:', finalResults); // Log the final processed results
 
@@ -596,22 +674,178 @@ router.get('/access-settings/:templateId', (req, res) => {
 
 
 // Update access settings
-router.post('/access-settings', (req, res) => {
+router.post('/access-settings', checkAuth, (req, res) => {
   const { templateId, userId, canAccess } = req.body;
 
-  // Use a callback function for the query
-  db.query(
-    'INSERT INTO access_settings (template_id, user_id, can_access) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE can_access = ?',
-    [templateId, userId, canAccess, canAccess],
-    (error) => {
-      if (error) {
-        console.error('Error updating access settings:', error);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-      res.sendStatus(200);
+  // Validate inputs
+  if (!templateId || !userId || typeof canAccess !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid input' });
+  }
+
+  // Start a transaction
+  db.beginTransaction(err => {
+    if (err) {
+      console.error('Transaction error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
-  );
+
+    if (canAccess) {
+      // Allow user access
+      db.query(
+        'INSERT INTO access_settings (template_id, user_id, can_access) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE can_access = ?',
+        [templateId, userId, true, true],
+        (error) => {
+          if (error) {
+            return db.rollback(() => {
+              console.error('Error allowing access:', error);
+              return res.status(500).json({ error: 'Internal Server Error' });
+            });
+          }
+
+          // Remove them from the denied list if previously denied
+          db.query(
+            'DELETE FROM access_settings WHERE template_id = ? AND user_id = ? AND can_access = ?',
+            [templateId, userId, false],
+            (error) => {
+              if (error) {
+                return db.rollback(() => {
+                  console.error('Error deleting denied access:', error);
+                  return res.status(500).json({ error: 'Internal Server Error' });
+                });
+              }
+
+              // Commit the transaction
+              db.commit(err => {
+                if (err) {
+                  return db.rollback(() => {
+                    console.error('Transaction commit error:', err);
+                    return res.status(500).json({ error: 'Internal Server Error' });
+                  });
+                }
+                res.json({ message: 'Access settings updated successfully' });
+              });
+            }
+          );
+        }
+      );
+    } else {
+      // Deny user access
+      db.query(
+        'INSERT INTO access_settings (template_id, user_id, can_access) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE can_access = ?',
+        [templateId, userId, false, false],
+        (error) => {
+          if (error) {
+            return db.rollback(() => {
+              console.error('Error denying access:', error);
+              return res.status(500).json({ error: 'Internal Server Error' });
+            });
+          }
+
+          // Remove them from the allowed list if previously allowed
+          db.query(
+            'DELETE FROM access_settings WHERE template_id = ? AND user_id = ? AND can_access = ?',
+            [templateId, userId, true],
+            (error) => {
+              if (error) {
+                return db.rollback(() => {
+                  console.error('Error deleting allowed access:', error);
+                  return res.status(500).json({ error: 'Internal Server Error' });
+                });
+              }
+
+              // Commit the transaction
+              db.commit(err => {
+                if (err) {
+                  return db.rollback(() => {
+                    console.error('Transaction commit error:', err);
+                    return res.status(500).json({ error: 'Internal Server Error' });
+                  });
+                }
+                res.json({ message: 'Access settings updated successfully' });
+              });
+            }
+          );
+        }
+      );
+    }
+  });
 });
 
+// Backend route to delete a template
+router.delete('/templates/:id', checkAuth, checkAccess, (req, res) => {
+  const { id } = req.params;
+
+  const deleteTemplateQuery = 'DELETE FROM templates WHERE id = ?';
+
+  db.query(deleteTemplateQuery, [id], (err, result) => {
+    if (err) {
+      return res.status(500).send('Error deleting template');
+    }
+    return res.status(200).send('Template deleted successfully');
+  });
+});
+
+
+// Route to get all unique tags from templates
+router.get('/tags', (req, res) => {
+  const query = `
+    SELECT tags FROM templates;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching tags:', err);
+      return res.status(500).json({ error: 'Failed to fetch tags' });
+    }
+
+    // Collect all tags from the templates
+    let allTags = [];
+    results.forEach(row => {
+      const tags = JSON.parse(row.tags); // Assuming the tags are stored as JSON array
+      allTags = [...allTags, ...tags];
+    });
+
+    // Remove duplicates
+    const uniqueTags = [...new Set(allTags)];
+
+    res.json(uniqueTags);
+  });
+});
+
+// Route to get templates ordered by likes_count
+router.get('/most-liked', (req, res) => {
+  const query = `
+    SELECT id, title, description, topic, tags, image_url, likes_count 
+    FROM templates
+    ORDER BY likes_count DESC
+    LIMIT 5;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching most liked templates:', err);
+      return res.status(500).json({ error: 'Failed to fetch most liked templates' });
+    }
+    res.json(results);
+  });
+});
+
+router.get('/latest', (req, res) => {
+  const query = `
+    SELECT t.id, t.title, t.description, t.image_url, u.username as author 
+    FROM templates t
+    LEFT JOIN users u ON t.user_id = u.id
+    ORDER BY t.created_at DESC
+    LIMIT 6;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching latest templates:', err);
+      return res.status(500).json({ error: 'Failed to fetch latest templates' });
+    }
+    res.json(results);
+  });
+});
 
 module.exports = router;
