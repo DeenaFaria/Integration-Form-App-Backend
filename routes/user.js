@@ -538,7 +538,7 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
       q.value AS question_text,
       q.type AS question_type,
       r.response_data,
-      q.id
+      q.id AS question_id
     FROM questions q
     LEFT JOIN form_responses r ON q.template_id = r.form_id
     WHERE q.template_id = ?;
@@ -554,109 +554,105 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
       return res.status(404).json({ message: 'No data found for this template.' });
     }
 
-    console.log('Raw results from DB:', results);  // Debugging log
+    console.log('Raw results from DB:', results);
 
-   // Step 2: Process the data
-const processedResults = results.reduce((acc, row) => {
-  const { question_text, question_type, response_data } = row;
+    // Step 2: Group results by question_id
+    const groupedResults = results.reduce((acc, row) => {
+      const { question_id, question_text, question_type, response_data } = row;
 
-  console.log('Current row:', row);  // Debugging log
-  console.log('response_data:', response_data);  // Debugging log
+      let parsedResponseData = {};
 
-  let responseValue = {};
-  if (response_data) {
-    // Check if response_data is already an object
-    if (typeof response_data === 'object') {
-      responseValue = response_data;  // Use it directly
-    } else if (typeof response_data === 'string') {
-      try {
-        responseValue = JSON.parse(response_data);  // Parse if it's a string
-      } catch (error) {
-        console.error('Error parsing response_data:', response_data);
-        return acc;  // Skip this entry if parsing fails
-      }
-    }
-  }
-
-  // Check if there are any entries in responseValue to process
-  if (Object.keys(responseValue).length === 0) {
-    return acc;  // Skip if there's no response data
-  }
-
-  // Now we need to process each entry in responseValue
-  Object.entries(responseValue).forEach(([responseKey, responseEntry]) => {
-    // Only process if the responseKey matches a known question ID
-    if (responseKey) {
-      // Check if the question is a string or radio option
-      if (question_type === 'string' || question_type === 'radio') {
-        if (responseEntry) {
-          if (!acc[question_text]) {
-            acc[question_text] = { numericValues: [], stringValues: [] };
-          }
-          acc[question_text].stringValues.push(responseEntry);  // Store the selected option
+      // Parse response_data if it's a string
+      if (typeof response_data === 'string') {
+        try {
+          parsedResponseData = JSON.parse(response_data);
+        } catch (error) {
+          console.error('Error parsing response_data:', response_data);
+          return acc;  // Skip this entry if parsing fails
         }
-
-        // Additionally, check if the responseEntry is a numeric value
-        const numericValue = parseFloat(responseEntry);
-        if (!isNaN(numericValue)) {
-          acc[question_text].numericValues.push(numericValue); // Aggregate numeric values
-        }
+      } else if (typeof response_data === 'object') {
+        parsedResponseData = response_data;
       }
 
-      // Check if the question is numeric explicitly (in case there are numeric questions as well)
-      if (question_type === 'numeric') {
-        const numericValue = parseFloat(responseEntry);
-        if (!isNaN(numericValue)) {
-          if (!acc[question_text]) {
-            acc[question_text] = { numericValues: [], stringValues: [] };
-          }
-          acc[question_text].numericValues.push(numericValue);
-        }
+      // Use question_id as the unique key for grouping
+      if (!acc[question_id]) {
+        acc[question_id] = {
+          question_text,
+          question_type,
+          responses: []
+        };
       }
-    }
-  });
 
-  return acc;
-}, {});
+      acc[question_id].responses.push(parsedResponseData);
 
-
-   // Step 3: Calculate averages and most common string values
-const finalResults = Object.entries(processedResults).map(([question, data]) => {
-  let avgNumericValue;
-  let mostCommonStringValue;
-
-  // Handle numeric values
-  if (data.numericValues.length > 0) {
-    avgNumericValue = (data.numericValues.reduce((sum, value) => sum + value, 0) / data.numericValues.length);
-  } else {
-    avgNumericValue = 'N/A'; // If no numeric values, set to N/A
-  }
-
-  // Handle string values
-  if (data.stringValues.length > 0) {
-    const countMap = data.stringValues.reduce((countMap, value) => {
-      countMap[value] = (countMap[value] || 0) + 1;
-      return countMap;
+      return acc;
     }, {});
-    
-    mostCommonStringValue = Object.entries(countMap)
-      .sort((a, b) => b[1] - a[1])[0][0];
-  } else {
-    mostCommonStringValue = 'N/A'; // If no string values, set to N/A
-  }
 
-  return {
-    question_text: question,
-    avg_numeric_value: avgNumericValue,
-    most_common_string_value: mostCommonStringValue,
-  };
-});
+    // Step 3: Process each question group
+    const finalResults = Object.values(groupedResults).map((questionData) => {
+      const { question_text, question_type, responses } = questionData;
 
-    console.log('Processed results:', finalResults); // Log the final processed results
+      let avgNumericValue = 'N/A';
+      let mostCommonStringValue = 'N/A';
 
+      const numericValues = [];
+      const stringValues = [];
+
+      // Process responses for each question group
+      responses.forEach(responseObj => {
+        Object.values(responseObj).forEach(response => {
+          // Separate logic for handling 'number' and 'radio'
+          if (question_type === 'number') {
+            const numericValue = parseFloat(response);
+            if (!isNaN(numericValue)) {
+              numericValues.push(numericValue);
+            }
+          } else {
+            // Handle all other types as string values
+            stringValues.push(response.toString());
+          }
+        });
+      });
+
+// Calculate average numeric value for 'number' type questions
+if (numericValues.length > 0 && question_type === 'number') {
+  // Calculate the sum of all numeric responses for this particular question
+  const total = numericValues.reduce((sum, value) => sum + value, 0);
+  
+  // Calculate the number of unique responses for this question (responseData length)
+  const numResponses = responses.length;
+  
+  // Average is the total divided by the number of responses
+  avgNumericValue = (total / numResponses).toFixed(2);
+}
+
+
+      // Calculate most common string value for non-number types
+      if (stringValues.length > 0 && question_type !== 'number') {
+        const countMap = stringValues.reduce((map, value) => {
+          map[value] = (map[value] || 0) + 1;
+          return map;
+        }, {});
+
+        const [mostCommon] = Object.entries(countMap)
+          .sort(([, countA], [, countB]) => countB - countA)[0];
+
+        mostCommonStringValue = mostCommon;
+      }
+
+      return {
+        question_text,
+        avg_numeric_value: question_type === 'number' ? avgNumericValue : 'N/A',
+        most_common_string_value: question_type !== 'number' ? mostCommonStringValue : 'N/A',
+      };
+    });
+
+    // Output final results
+    console.log('Final results:', finalResults);
     return res.status(200).json(finalResults);
   });
 });
+
 
 // Get access settings for a specific template
 router.get('/access-settings/:templateId', (req, res) => {
