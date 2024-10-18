@@ -30,7 +30,6 @@ router.get('/users', checkAuth, (req, res) => {
   });
 });
 
-// Create a new template (Authenticated users only)
 // Create a new template route
 router.post('/templates', checkAuth, upload.single('image'), async (req, res) => {
   const { title, description, questions, tags, topic } = req.body;  // Added topic
@@ -66,8 +65,8 @@ router.post('/templates', checkAuth, upload.single('image'), async (req, res) =>
     const templateId = result.insertId;
 
     // Insert questions into the questions table
-    const questionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
-    const questionData = questions.map(q => [templateId, q.type, q.value, JSON.stringify(q.options)]);
+    const questionsQuery = 'INSERT INTO questions (template_id, type, value, options, showQuestion) VALUES ?';
+    const questionData = questions.map(q => [templateId, q.type, q.value, JSON.stringify(q.options),  q.showQuestion ? 1 : 0 ]);
 
     db.query(questionsQuery, [questionData], (err) => {
       if (err) {
@@ -150,10 +149,6 @@ router.get('/templates', (req, res) => {
   });
 });
 
-
-
-
-// Get a specific template by ID
 // Get a specific template by ID along with its questions
 router.get('/templates/:id', (req, res) => {
   const { id } = req.params;
@@ -172,7 +167,7 @@ router.get('/templates/:id', (req, res) => {
     const template = templateResults[0];
 
     // Query to fetch the questions associated with this template
-    const questionsQuery = 'SELECT * FROM questions WHERE template_id = ?';
+    const questionsQuery = 'SELECT * FROM questions WHERE template_id = ? and showQuestion=1';
     
     db.query(questionsQuery, [id], (err, questionResults) => {
       if (err) {
@@ -188,11 +183,10 @@ router.get('/templates/:id', (req, res) => {
 });
 
 
-// Routes
 // Update an existing template
 router.put('/templates/:id', checkAuth, checkAccess, upload.single('image'), async (req, res) => {
   const { id } = req.params;
-  const { title, description, questions, tags, topic } = req.body;  // Added topic
+  const { title, description, questions, tags, topic } = req.body; // Include topic and questions
   const imageFile = req.file;
 
   console.log('Received request to update template:', { id, title, description, questions, tags, topic });
@@ -237,9 +231,15 @@ router.put('/templates/:id', checkAuth, checkAccess, upload.single('image'), asy
         return res.status(500).json({ error: 'Error removing old questions' });
       }
 
-      // Insert the updated questions
-      const insertQuestionsQuery = 'INSERT INTO questions (template_id, type, value, options) VALUES ?';
-      const questionData = questions.map(question => [id, question.type, question.value, JSON.stringify(question.options)]);
+      // Insert the updated questions including the showQuestion property
+      const insertQuestionsQuery = 'INSERT INTO questions (template_id, type, value, options, showQuestion) VALUES ?';
+      
+      // Ensure questions are properly formatted for insertion
+      const questionData = questions.map(question => {
+        // Ensure options is correctly serialized
+        return [id, question.type, question.value, JSON.stringify(question.options),  (question.showQuestion === 'true' || question.showQuestion === true || question.showQuestion === '1') ? 1 : 0 ];
+      });
+      console.log('Final question data:', questionData);
 
       db.query(insertQuestionsQuery, [questionData], (err) => {
         if (err) {
@@ -489,11 +489,13 @@ router.get('/templates/:id/comments', (req, res) => {
   const templateId = req.params.id;
 
   const query = `
-    SELECT comments.id, comments.template_id, comments.user_id, comments.content, comments.created_at, users.username
-    FROM comments
-    JOIN users ON comments.user_id = users.id
-    WHERE comments.template_id = ?;
-  `;
+  SELECT comments.id, comments.template_id, comments.user_id, comments.content, comments.created_at, users.username
+  FROM comments
+  JOIN users ON comments.user_id = users.id
+  WHERE comments.template_id = ?
+  ORDER BY comments.created_at ASC;
+`;
+
 
   db.query(query, [templateId], (error, results) => {
     if (error) {
