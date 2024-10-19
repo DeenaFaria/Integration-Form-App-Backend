@@ -18,7 +18,7 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));  // Set the URL-
 // Middleware
 //app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:3000', // Replace with your frontend's URL
+  origin: process.env.CORS_ORIGIN, // Replace with your frontend's URL
   credentials: true // Allow credentials (such as cookies and tokens)
 }));
 
