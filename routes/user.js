@@ -534,6 +534,7 @@ router.get('/search', (req, res) => {
 router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
   const templateId = req.params.id;
 
+  // Step 1: Retrieve raw data
   const sqlQuery = `
     SELECT
       q.value AS question_text,
@@ -557,22 +558,25 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
 
     console.log('Raw results from DB:', results);
 
+    // Step 2: Group results by question_id
     const groupedResults = results.reduce((acc, row) => {
       const { question_id, question_text, question_type, response_data } = row;
 
       let parsedResponseData = {};
 
+      // Parse response_data if it's a string
       if (typeof response_data === 'string') {
         try {
           parsedResponseData = JSON.parse(response_data);
         } catch (error) {
           console.error('Error parsing response_data:', response_data);
-          return acc;
+          return acc;  // Skip this entry if parsing fails
         }
       } else if (typeof response_data === 'object') {
         parsedResponseData = response_data;
       }
 
+      // Use question_id as the unique key for grouping
       if (!acc[question_id]) {
         acc[question_id] = {
           question_text,
@@ -581,14 +585,12 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
         };
       }
 
-      // Only add the response if the key matches the question_id
-      if (parsedResponseData[question_id]) {
-        acc[question_id].responses.push(parsedResponseData[question_id]);
-      }
+      acc[question_id].responses.push(parsedResponseData);
 
       return acc;
     }, {});
 
+    // Step 3: Process each question group
     const finalResults = Object.values(groupedResults).map((questionData) => {
       const { question_text, question_type, responses } = questionData;
 
@@ -598,23 +600,36 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
       const numericValues = [];
       const stringValues = [];
 
-      responses.forEach(response => {
-        if (question_type === 'number') {
-          const numericValue = parseFloat(response);
-          if (!isNaN(numericValue)) {
-            numericValues.push(numericValue);
+      // Process responses for each question group
+      responses.forEach(responseObj => {
+        Object.values(responseObj).forEach(response => {
+          // Separate logic for handling 'number' and 'radio'
+          if (question_type === 'number') {
+            const numericValue = parseFloat(response);
+            if (!isNaN(numericValue)) {
+              numericValues.push(numericValue);
+            }
+          } else {
+            // Handle all other types as string values
+            stringValues.push(response.toString());
           }
-        } else {
-          stringValues.push(response.toString());
-        }
+        });
       });
 
-      if (numericValues.length > 0 && question_type === 'number') {
-        const total = numericValues.reduce((sum, value) => sum + value, 0);
-        const numResponses = numericValues.length;
-        avgNumericValue = (total / numResponses).toFixed(2);
-      }
+// Calculate average numeric value for 'number' type questions
+if (numericValues.length > 0 && question_type === 'number') {
+  // Calculate the sum of all numeric responses for this particular question
+  const total = numericValues.reduce((sum, value) => sum + value, 0);
+  
+  // Calculate the number of unique responses for this question (responseData length)
+  const numResponses = responses.length;
+  
+  // Average is the total divided by the number of responses
+  avgNumericValue = (total / numResponses).toFixed(2);
+}
 
+
+      // Calculate most common string value for non-number types
       if (stringValues.length > 0 && question_type !== 'number') {
         const countMap = stringValues.reduce((map, value) => {
           map[value] = (map[value] || 0) + 1;
@@ -634,6 +649,7 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
       };
     });
 
+    // Output final results
     console.log('Final results:', finalResults);
     return res.status(200).json(finalResults);
   });
