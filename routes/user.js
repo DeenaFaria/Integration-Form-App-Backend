@@ -157,7 +157,7 @@ router.get('/templates', (req, res) => {
 
 
 // Get a specific template by ID along with its questions
-router.get('/templates/:id',checkAccess, (req, res) => {
+router.get('/templates/:id', (req, res) => {
   const { id } = req.params;
 
   // Query to fetch the template
