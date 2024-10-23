@@ -80,14 +80,16 @@ router.post('/templates', checkAuth, upload.single('image'), async (req, res) =>
 });
 
 
-
-
-
 router.get('/templates', (req, res) => {
   const userId = req.user ? req.user.id : null; // Get user ID from auth middleware if available
 
-  // Fetch all templates
-  const query = 'SELECT * FROM templates';
+  // Fetch all templates along with creator's name
+  const query = `
+    SELECT t.*, u.username AS creator_name
+    FROM templates t
+    LEFT JOIN users u ON t.user_id = u.id
+  `;
+
   db.query(query, (err, templates) => {
     if (err) {
       return res.status(500).send('Error fetching templates');
@@ -104,7 +106,8 @@ router.get('/templates', (req, res) => {
 
       // Fetch access settings for the current template
       const accessQuery = `
-        SELECT user_id, can_access FROM access_settings 
+        SELECT user_id, can_access 
+        FROM access_settings 
         WHERE template_id = ?`;
         
       db.query(accessQuery, [templateId], (err, accessResults) => {
@@ -129,8 +132,11 @@ router.get('/templates', (req, res) => {
           }
         }
 
-        // Add the modified template to the array
-        templatesWithAccess.push(template);
+        // Add the modified template with creator name to the array
+        templatesWithAccess.push({
+          ...template,
+          creator_name: template.creator_name // Add creator's name to the template object
+        });
 
         // Track the number of processed templates
         templatesProcessed++;
@@ -149,8 +155,9 @@ router.get('/templates', (req, res) => {
   });
 });
 
+
 // Get a specific template by ID along with its questions
-router.get('/templates/:id', (req, res) => {
+router.get('/templates/:id',checkAccess, (req, res) => {
   const { id } = req.params;
 
   // Query to fetch the template
@@ -819,12 +826,14 @@ router.get('/tags', (req, res) => {
   });
 });
 
-// Route to get templates ordered by likes_count
 router.get('/most-liked', (req, res) => {
   const query = `
-    SELECT id, title, description, topic, tags, image_url, likes_count 
-    FROM templates
-    ORDER BY likes_count DESC
+    SELECT t.id, t.title, t.description, t.topic, t.tags, t.image_url, t.likes_count, 
+           COUNT(fs.id) AS filledFormsCount
+    FROM templates t
+    LEFT JOIN form_responses fs ON t.id = fs.form_id
+    GROUP BY t.id
+    ORDER BY t.likes_count DESC
     LIMIT 5;
   `;
 
@@ -836,6 +845,7 @@ router.get('/most-liked', (req, res) => {
     res.json(results);
   });
 });
+
 
 router.get('/latest', (req, res) => {
   const query = `
