@@ -4,6 +4,34 @@ const db = require('../config/db');
 const cloudinary = require('../config/cloud');
 const { checkAuth, checkAccess, optionalAuth } = require('../middleware/auth'); // Only checkAuth middleware is needed
 const multer = require('multer');
+const crypto = require('crypto');
+const { odooInstance, authenticateOdoo, getSessionToken} = require('../config/odoo');
+const {getUsers, createProjectIssuesAndUpdate, createJiraUser, createIssue} = require('../config/jira')
+require('dotenv').config();
+const axios = require('axios');
+
+
+
+// Function to generate a random token
+const generateApiToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+// Generate API Token Route
+router.post('/generate-token', checkAuth, (req, res) => {
+  const userId = req.user.id; // Assuming you have middleware that sets req.user
+
+  // Generate a new API token
+  const apiToken = generateApiToken();
+
+  // Update the user's api_token in the database
+  db.query('UPDATE users SET api_token = ? WHERE id = ?', [apiToken, userId], (err, result) => {
+      if (err) {
+          return res.status(500).json({ message: 'Error generating API token' });
+      }
+      return res.json({ apiToken });
+  });
+});
 
 
 // Multer configuration
@@ -670,6 +698,62 @@ router.get('/analytics/templates/:id/', checkAuth, (req, res) => {
 });
 
 
+router.post('/templates/:id/odoo',getSessionToken, async (req, res) => {
+  const templateId = req.params.id;
+
+  // Simplified SQL query to select only basic template data
+  const sqlQuery = `
+    SELECT
+      t.title AS template_title,
+      u.username AS author_name
+    FROM templates t
+    JOIN users u ON t.user_id = u.id
+    WHERE t.id = ?;
+  `;
+
+  db.query(sqlQuery, [templateId], async (err, results) => {
+    if (err) {
+      console.error('Database query error:', err);
+      return res.status(500).json({ message: 'Server error' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'No data found for this template.' });
+    }
+
+    const { author_name, template_title } = results[0];
+
+    // Create a static payload for testing
+    const payload = {
+      author_name: author_name || 'Default Author',
+      template_title: template_title || 'Default Title',
+      questions: [] // Static for now; could add sample questions here
+    };
+
+    try {
+      const sessionToken = await authenticateOdoo();
+      const odooRequestData = {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'x_model.form', // Adjust to your Odoo model
+          method: 'create',
+          args: [payload],
+        },
+      };
+
+      const response = await odooInstance.post('/web/dataset/call_kw', odooRequestData, {
+        headers: { 'X-Openerp-Session-Id': sessionToken },
+      });
+
+      res.json({ message: 'Data sent to Odoo successfully', response: response.data });
+    } catch (error) {
+      console.error('Error sending data to Odoo:', error);
+      res.status(500).json({ message: 'Failed to send data to Odoo', error });
+    }
+  });
+});
+
 
 
 // Get access settings for a specific template
@@ -864,5 +948,59 @@ router.get('/latest', (req, res) => {
     res.json(results);
   });
 });
+
+
+// Route to create a Jira ticket
+// Route to create a Jira ticket
+router.post('/create-jira-ticket', async (req, res) => {
+    const { summary, priority, link, userId } = req.body; // Extract summary, priority, and link from the request
+
+    if (!summary || !priority || !link) {
+        return res.status(400).json({
+            success: false,
+            message: 'Summary, priority, and link are required.',
+        });
+    }
+
+    const query = 'SELECT username, email FROM users WHERE id = ?'; // Query to fetch the username and email
+
+    try {
+        // Use a Promise to handle the database query asynchronously
+        const user = await new Promise((resolve, reject) => {
+            db.query(query, [userId], (err, results) => {
+                if (err) {
+                    return reject('Error fetching user details');
+                }
+                if (results.length === 0) {
+                    return reject('User not found');
+                }
+                resolve(results[0]);
+            });
+        });
+
+        const projectKey = process.env.PROJECT_KEY; // Ensure your project key is set correctly
+        const issueType = 'Task'; // Or any other issue type you need
+
+        // Create the Jira user or get the existing user's accountId
+        const accountId = await createJiraUser(user.username, user.email, user.username);
+
+        // Call the createIssue function and pass all necessary fields, including the reporter's accountId
+        const issueKey = await createIssue(projectKey, issueType, summary, link, priority, accountId);
+
+        if (issueKey) {
+            // Construct the Jira ticket URL using the issue key
+            const jiraTicketUrl = `${process.env.JIRA_BASE_URL}/browse/${issueKey}`;
+            res.status(200).json({ success: true, jiraTicketUrl });
+        } else {
+            res.status(500).json({ success: false, message: 'Failed to create issue' });
+        }
+    } catch (error) {
+        console.error('Error creating Jira ticket:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
+
 
 module.exports = router;

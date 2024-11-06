@@ -7,3 +7,18 @@ CREATE TABLE comments (
     FOREIGN KEY (template_id) REFERENCES templates(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+SELECT
+    JSON_UNQUOTE(JSON_EXTRACT(response_data, '$.70')) AS extracted_value
+FROM form_responses
+WHERE form_id = 17;
+
+
+SELECT * FROM form_responses WHERE form_id = (SELECT id FROM questions WHERE template_id = 17);
+
+SELECT
+  q.value AS question_text,
+  r.response_data
+FROM questions q
+LEFT JOIN form_responses r ON q.template_id = r.form_id 
+WHERE q.template_id = 17;

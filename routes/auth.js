@@ -4,46 +4,59 @@ const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const router = express.Router();
 const { checkAuth } = require('../middleware/auth');
+const createSalesforceAccountAndContact = require('../config/sales');
 
 
 // Register Route
 router.post('/register', async (req, res) => {
-    const { username, email, password } = req.body;
-  
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: 'All fields are required' });
-    }
-  
-    try {
-      // Check if user already exists
-      db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
-        if (err) {
-          return res.status(500).json({ message: 'Database error', error: err });
-        }
-  
-        if (results.length > 0) {
-          return res.status(400).json({ message: 'User already exists' });
-        }
-  
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-  
-        // Insert new user into MySQL
-        db.query('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', 
-          [username, email, hashedPassword], 
-          (err, result) => {
-            if (err) {
-              return res.status(500).json({ message: 'Failed to register user', error: err });
-            }
-            return res.status(201).json({ message: 'User registered successfully' });
+  const { username, email, password } = req.body;
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error', error: err });
+      }
+
+      if (results.length > 0) {
+        return res.status(400).json({ message: 'User already exists' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      db.query(
+        'INSERT INTO users (username, email, password) VALUES (?, ?, ?)', 
+        [username, email, hashedPassword], 
+        async (err, result) => {
+          if (err) {
+            return res.status(500).json({ message: 'Failed to register user', error: err });
           }
-        );
-      });
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send('Server Error');
-    }
-  });
+
+          // User registered in MySQL successfully, now create an account in Salesforce
+          try {
+            await createSalesforceAccountAndContact({
+              firstName: username,
+              lastName: '-', // Adjust as needed
+              email: email,
+              companyName: 'itransition' // Adjust as needed
+            });
+           // console.log('Salesforce token:', response.data.access_token);
+            res.status(201).json({ message: 'User registered successfully and added to Salesforce' });
+          } catch (salesforceError) {
+            console.error('Salesforce integration error:', salesforceError);
+            res.status(201).json({ message: 'User registered successfully, but Salesforce integration failed' });
+          }
+        }
+      );
+    });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+});
   
 
 // Login Route
